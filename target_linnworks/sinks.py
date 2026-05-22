@@ -176,6 +176,10 @@ class OrdersSink(LinnworksSink):
         order_ids = response.json()
         order_id = order_ids[0] if order_ids else None
 
+        if order_id is None:
+            # Linnworks returns [] for orders it cannot create or update (e.g. already paid).
+            return None, True, {"existing": True}
+
         if order_id and source_id:
             self.linnworks_post(
                 "/api/Orders/SetExtendedProperties",
