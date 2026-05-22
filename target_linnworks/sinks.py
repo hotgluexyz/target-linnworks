@@ -6,27 +6,43 @@ from datetime import datetime, timedelta
 from target_linnworks.client import LinnworksSink
 
 
-def _map_address(address: dict, full_name: str = None, email: str = None, phone: str = None) -> dict:
-    """Map a hotglue unified address to a Linnworks address object.
-
-    full_name, email, and phone are passed separately because the unified schema stores
-    shipping_name / billing_name / customer_email / shipping_phone as top-level order
-    fields, not inside the address object.
+def _map_address(
+    address: dict, 
+    full_name: str = None, 
+    company: str = None, 
+    email: str = None, 
+    phone: str = None
+) -> dict:
     """
-    if not address:
-        return {}
+    Maps a hotglue unified address and separately provided fields to a Linnworks address object.
+
+    Parameters:
+        address (dict): Hotglue address dictionary (may be None or empty).
+        full_name (str, optional): Name provided at order top level.
+        company (str, optional): Company provided at order top level.
+        email (str, optional): Email provided at order top level.
+        phone (str, optional): Phone number provided at order top level.
+
+    Notes:
+        - Unified schema stores shipping/billing name, company, email, and phone as top-level order fields.
+        - The caller's clean_payload() function is responsible for handling the all-None/all-empty case.
+
+    Returns:
+        dict: Linnworks-formatted address object.
+    """
+    addr = address or {}
     return {
-        "FullName": full_name or address.get("name") or address.get("full_name"),
-        "Company": address.get("company"),
-        "Address1": address.get("line1") or address.get("address1"),
-        "Address2": address.get("line2") or address.get("address2"),
-        "Address3": address.get("line3") or address.get("address3"),
-        "Town": address.get("city") or address.get("town"),
-        "Region": address.get("state") or address.get("region"),
-        "PostCode": address.get("postal_code") or address.get("zip") or address.get("postcode"),
-        "Country": address.get("country"),
-        "EmailAddress": email or address.get("email"),
-        "PhoneNumber": phone or address.get("phone"),
+        "FullName": full_name or addr.get("name") or addr.get("full_name"),
+        "Company": company or addr.get("company"),
+        "Address1": addr.get("line1") or addr.get("address1"),
+        "Address2": addr.get("line2") or addr.get("address2"),
+        "Address3": addr.get("line3") or addr.get("address3"),
+        "Town": addr.get("city") or addr.get("town"),
+        "Region": addr.get("state") or addr.get("region"),
+        "PostCode": addr.get("postal_code") or addr.get("zip") or addr.get("postcode"),
+        "Country": addr.get("country"),
+        "EmailAddress": email or addr.get("email"),
+        "PhoneNumber": phone or addr.get("phone"),
     }
 
 
@@ -99,15 +115,17 @@ class OrdersSink(LinnworksSink):
             ]
 
         shipping_address = _map_address(
-            record.get("shipping_address") or {},
+            record.get("shipping_address"),
             full_name=record.get("shipping_name") or record.get("customer_name"),
-            email=record.get("customer_email"),
+            company=record.get("shipping_company") or record.get("customer_company"),
+            email=record.get("shipping_email") or record.get("customer_email"),
             phone=record.get("shipping_phone") or record.get("phone"),
         )
         billing_address = _map_address(
-            record.get("billing_address") or record.get("shipping_address") or {},
+            record.get("billing_address") or record.get("shipping_address"),
             full_name=record.get("billing_name") or record.get("shipping_name") or record.get("customer_name"),
-            email=record.get("billing_email") or record.get("customer_email"),
+            company=record.get("billing_company") or record.get("shipping_company") or record.get("customer_company"),
+            email=record.get("billing_email") or record.get("shipping_email") or record.get("customer_email"),
             phone=record.get("billing_phone") or record.get("shipping_phone") or record.get("phone"),
         )
 
@@ -130,6 +148,7 @@ class OrdersSink(LinnworksSink):
             "PostalServiceName": (
                 record.get("shipping_method")
                 or record.get("postal_service_name")
+                or record.get("carrier")
                 or next((s.get("carrier") for s in (record.get("shipping_lines") or []) if s), None)
             ),
             "PostageCost": next(
