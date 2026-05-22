@@ -129,8 +129,6 @@ class OrdersSink(LinnworksSink):
             phone=record.get("billing_phone") or record.get("shipping_phone") or record.get("phone"),
         )
 
-        context["_source_id"] = record.get("id")
-
         payload = {
             "Source": record.get("source") or default_source,
             "SubSource": record.get("subsource") or record.get("sub_source") or default_subsource,
@@ -140,6 +138,7 @@ class OrdersSink(LinnworksSink):
                 or record.get("number")
                 or record.get("id")
             ),
+            "ExternalReference": record.get("id"),
             "ReceivedDate": received_date,
             "DispatchBy": dispatch_by,
             "Currency": record.get("currency"),
@@ -162,7 +161,6 @@ class OrdersSink(LinnworksSink):
         return self.clean_payload(payload)
 
     def upsert_record(self, record: dict, context: dict) -> tuple:
-        source_id = context.get("_source_id")
         location = self.config.get("location", "Default")
 
         response = self.linnworks_post(
@@ -180,15 +178,4 @@ class OrdersSink(LinnworksSink):
             # Linnworks returns [] for orders it cannot create or update (e.g. already paid).
             return None, True, {"existing": True}
 
-        if order_id and source_id:
-            self.linnworks_post(
-                "/api/Orders/SetExtendedProperties",
-                {
-                    "orderId": order_id,
-                    "extendedProperties": json.dumps(
-                        [{"Name": "SourceOrderId", "Value": source_id, "Type": "Attribute"}]
-                    ),
-                },
-            )
-
-        return order_id, bool(order_id), {}
+        return order_id, True, {}
