@@ -21,7 +21,7 @@ pip install git+https://github.com/hotgluexyz/target-linnworks.git
 | `application_id` | Yes | UUID of the Linnworks System Integration application |
 | `application_secret` | Yes | Application Secret from the Linnworks developer portal |
 | `installation_token` | Yes | Permanent installation token received when the app was installed on the target Linnworks account |
-| `location` | No | Linnworks location name or ID to create orders in. Defaults to `"Default"` |
+| `location` | No | Linnworks location name used when creating orders and setting stock levels. Defaults to `"Default"` |
 | `default_source` | No | Default value for the `Source` field on created orders. Defaults to `"Hotglue"` |
 | `default_subsource` | No | Default value for the `SubSource` field on created orders. Defaults to `"Hotglue"` |
 
@@ -50,11 +50,10 @@ Linnworks uses a System Integration application model:
 
 | Stream | Description |
 |---|---|
-| `Orders` | Creates or updates orders in Linnworks via the `CreateOrders` API. Orders are identified by `Source` + `SubSource` + `ReferenceNumber`; sending the same combination to an unpaid order updates it instead of creating a duplicate. |
+| `Orders` | Creates or updates orders via the `CreateOrders` API. Orders are identified by `Source` + `SubSource` + `ReferenceNumber`; sending the same combination to an unpaid order updates it rather than creating a duplicate. |
+| `Products` | Creates or updates inventory items via `AddInventoryItem` / `UpdateInventoryItem`. Stock levels from `available_quantity` are applied via `SetStockLevel`. Products with multiple variants produce one item per variant plus a parent placeholder. |
 
-### Field Mapping for Orders
-
-The sink maps from the hotglue unified Orders schema:
+### Orders field mapping
 
 | Incoming field | Linnworks field |
 |---|---|
@@ -67,7 +66,6 @@ The sink maps from the hotglue unified Orders schema:
 | `paid` | `PaymentStatus` (1 = paid, omitted = unpaid) |
 | `shipping_method` / `postal_service_name` / `shipping_lines[0].carrier` | `PostalServiceName` |
 | `shipping_cost` / `postage_cost` / `total_shipping` | `PostageCost` |
-| `id` | `ExtendedProperties["SourceOrderId"]` (source system ID, stored after order creation) |
 | `line_items[].sku` | `OrderItems[].ItemNumber` / `ChannelSKU` |
 | `line_items[].product_name` / `title` / `name` | `OrderItems[].ItemTitle` |
 | `line_items[].quantity` | `OrderItems[].Qty` |
@@ -75,7 +73,26 @@ The sink maps from the hotglue unified Orders schema:
 | `line_items[].discount_amount` / `discount` | `OrderItems[].LineDiscount` |
 | `line_items[].tax_rate` | `OrderItems[].TaxRate` |
 | `billing_address.*` / `billing_name` / `billing_email` | `BillingAddress.*` |
-| `shipping_address.*` / `delivery_address.*` / `shipping_name` / `customer_email` | `DeliveryAddress.*` |
+| `shipping_address.*` / `shipping_name` / `customer_email` | `DeliveryAddress.*` |
+
+### Products field mapping
+
+Products are upserted by SKU. A product without variants (or with a single variant) maps to one stock item. A product with multiple variants produces one parent item and one stock item per variant.
+
+| Incoming field | Linnworks field |
+|---|---|
+| `sku` / `id` | `ItemNumber` (SKU) |
+| `name` | `ItemTitle` |
+| `description` / `short_description` | `MetaData` |
+| `cost` | `PurchasePrice` |
+| `category.name` / `categories[0].name` | `CategoryName` |
+| `variants[].sku` | `ItemNumber` on the variant stock item |
+| `variants[].price` | `RetailPrice` |
+| `variants[].cost` | `PurchasePrice` (overrides product-level cost) |
+| `variants[].available_quantity` | Stock level via `SetStockLevel` at the configured location |
+| `variants[].barcode` | `BarcodeNumber` |
+| `variants[].weight` | `Weight` |
+| `variants[].width` / `length` / `depth` | `Width` / `Height` / `Depth` |
 
 ## Usage
 
@@ -85,11 +102,11 @@ Pipe tap output directly into the target:
 tap-mystore --config tap_config.json | target-linnworks --config config.json
 ```
 
-Use the sample payload for a quick smoke test:
+Use the sample payloads for a quick smoke test:
 
 ```bash
-cat sample_payload/data.singer | target-linnworks --config .secrets/config.json \
-    > output.singer 2> output.singer.log
+cat sample_payload/orders.singer | target-linnworks --config .secrets/config.json
+cat sample_payload/products.singer | target-linnworks --config .secrets/config.json
 ```
 
 ## Developer Resources

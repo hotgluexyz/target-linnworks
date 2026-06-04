@@ -4,7 +4,7 @@ from hotglue_singer_sdk import typing as th
 from hotglue_singer_sdk.target_sdk.target import TargetHotglue
 from hotglue_singer_sdk.helpers.capabilities import AlertingLevel
 
-from target_linnworks.sinks import OrdersSink
+from target_linnworks.sinks import OrdersSink, ProductsSink
 
 
 class TargetLinnworks(TargetHotglue):
@@ -12,6 +12,7 @@ class TargetLinnworks(TargetHotglue):
 
     SINK_TYPES = [
         OrdersSink,
+        ProductsSink,
     ]
     name = "target-linnworks"
     alerting_level = AlertingLevel.ERROR
