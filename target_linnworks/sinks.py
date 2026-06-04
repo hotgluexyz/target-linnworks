@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
+from hotglue_etl_exceptions import InvalidPayloadError
+
 from target_linnworks.client import LinnworksSink
 
 
@@ -262,11 +264,15 @@ class ProductsSink(LinnworksSink):
         if stock_level is not None:
             location_name = self.config.get("location", "Default")
             location_id = self._get_location_id(location_name)
-            if location_id:
-                self._request("POST", "/api/Stock/SetStockLevel", json={
-                    "stockLevels": [{"SKU": sku, "LocationId": location_id, "Level": stock_level}],
-                    "changeSource": "Hotglue",
-                })
+            if location_id is None:
+                raise InvalidPayloadError(
+                    f"Linnworks location '{location_name}' not found. "
+                    f"Check the 'location' setting in config."
+                )
+            self._request("POST", "/api/Stock/SetStockLevel", json={
+                "stockLevels": [{"SKU": sku, "LocationId": location_id, "Level": stock_level}],
+                "changeSource": "Hotglue",
+            })
 
         return item_id
 
@@ -287,6 +293,16 @@ class ProductsSink(LinnworksSink):
 
         existing_parent = self._find_item_by_sku(product_sku)
         if existing_parent:
+            group = self._request(
+                "GET", "/api/Stock/GetVariationGroupByParentId",
+                params={"pkStockItemId": existing_parent["StockItemId"]},
+            ).json()
+            if not group:
+                raise InvalidPayloadError(
+                    f"SKU '{product_sku}' already exists as a plain stock item in Linnworks "
+                    f"but is now being synced as a multi-variant product. "
+                    f"Delete the existing item in Linnworks first to convert it to a variation group."
+                )
             self._request("POST", "/api/Stock/AddVariationItems", json={
                 "pkVariationItemId": existing_parent["StockItemId"],
                 "pkStockItemIds": variant_ids,
