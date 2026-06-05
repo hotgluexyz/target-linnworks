@@ -244,12 +244,14 @@ class ProductsSink(LinnworksSink):
             item["_stock_level"] = int(stock_level)
         return item
 
-    def _upsert_item(self, item: dict) -> Optional[str]:
+    def _upsert_item(self, item: dict) -> str:
         """Create or update a single Linnworks stock item, then set its stock level if present."""
         stock_level = item.pop("_stock_level", None)
         sku = item.get("ItemNumber")
         if not sku:
-            return None
+            raise InvalidPayloadError(
+                "Product record is missing a required SKU (sku or id field)."
+            )
 
         existing = self._find_item_by_sku(sku)
         if existing:
@@ -326,9 +328,10 @@ class ProductsSink(LinnworksSink):
 
         category = record.get("category") or {}
         categories = record.get("categories") or []
+        first_category = categories[0] if categories else None
         category_name = (
             category.get("name")
-            or (categories[0].get("name") if categories else None)
+            or (first_category.get("name") if isinstance(first_category, dict) else None)
         )
 
         variants = record.get("variants") or []
@@ -347,11 +350,12 @@ class ProductsSink(LinnworksSink):
         if len(variants) == 1:
             # Single variant — treat as a simple product; prefer variant-level fields.
             v = variants[0]
+            variant_cost = _parse_float(v.get("cost"))
             item_id = self._upsert_item(self._build_item(
                 sku=v.get("sku") or product_sku,
                 name=name,
                 description=description,
-                purchase_price=_parse_float(v.get("cost")) or cost,
+                purchase_price=variant_cost if variant_cost is not None else cost,
                 retail_price=_parse_float(v.get("price")),
                 barcode=v.get("barcode"),
                 weight=_parse_float(v.get("weight")),
@@ -371,11 +375,12 @@ class ProductsSink(LinnworksSink):
             v_sku = v.get("sku")
             if not v_sku or v_sku == product_sku:
                 continue
+            variant_cost = _parse_float(v.get("cost"))
             v_id = self._upsert_item(self._build_item(
                 sku=v_sku,
                 name=name,
                 description=v.get("description") or description,
-                purchase_price=_parse_float(v.get("cost")) or cost,
+                purchase_price=variant_cost if variant_cost is not None else cost,
                 retail_price=_parse_float(v.get("price")),
                 barcode=v.get("barcode"),
                 weight=_parse_float(v.get("weight")),
@@ -385,8 +390,12 @@ class ProductsSink(LinnworksSink):
                 category_name=category_name,
                 stock_level=v.get("available_quantity"),
             ))
-            if v_id:
-                variant_ids.append(v_id)
+            variant_ids.append(v_id)
+
+        if not variant_ids:
+            raise InvalidPayloadError(
+                "Multi-variant product has no variant SKUs to sync."
+            )
 
         group_id = self._ensure_variation_group(product_sku, name, variant_ids)
         return group_id, True, {}
