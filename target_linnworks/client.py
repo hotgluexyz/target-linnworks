@@ -1,23 +1,15 @@
 import requests
-
-from typing import Dict, List, Optional
+from typing import Optional
 
 from hotglue_singer_sdk.target_sdk.client import HotglueSink
 from hotglue_singer_sdk.exceptions import FatalAPIError, RetriableAPIError
 from hotglue_etl_exceptions import InvalidCredentialsError, InvalidPayloadError
-from hotglue_singer_sdk.plugin_base import PluginBase
 
 from target_linnworks.auth import LinnworksAuth
 
 
 class LinnworksSink(HotglueSink):
-    def __init__(
-        self,
-        target: PluginBase,
-        stream_name: str,
-        schema: Dict,
-        key_properties: Optional[List[str]],
-    ) -> None:
+    def __init__(self, target, stream_name, schema, key_properties):
         super().__init__(target, stream_name, schema, key_properties)
         self.authenticator = LinnworksAuth(self._target)
 
@@ -25,21 +17,51 @@ class LinnworksSink(HotglueSink):
     def base_url(self) -> str:
         return getattr(self._target, "_server", "https://eu-ext.linnworks.net")
 
-    def linnworks_post(self, path: str, form_data: dict) -> requests.Response:
-        """POST form-encoded data to a Linnworks API path.
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        """Authenticated request with one 401 retry to handle expired session tokens.
 
-        Auth headers are resolved first so that _server is populated before base_url is read.
-        On a 401 the token is cleared and the request is retried once with a fresh session,
-        handling the case where the server invalidates a token before our local TTL expires.
+        Calling self.default_headers first ensures auth runs (and sets _server) before
+        base_url is read.
         """
         headers = self.default_headers
-        response = requests.post(f"{self.base_url}{path}", headers=headers, data=form_data)
+        response = requests.request(method, f"{self.base_url}{path}", headers=headers, **kwargs)
         if response.status_code == 401:
             self.authenticator._token = None
-            headers = self.default_headers  # triggers _authorize(); raises if credentials are bad
-            response = requests.post(f"{self.base_url}{path}", headers=headers, data=form_data)
+            headers = self.default_headers
+            response = requests.request(method, f"{self.base_url}{path}", headers=headers, **kwargs)
         self.validate_response(response)
         return response
+
+    def linnworks_post(self, path: str, form_data: dict) -> requests.Response:
+        """POST form-encoded data (used by legacy endpoints like CreateOrders)."""
+        return self._request("POST", path, data=form_data)
+
+    def _find_item_by_sku(self, sku: str) -> Optional[dict]:
+        """Return an existing StockItem dict for the given SKU, or None if not found.
+
+        Linnworks returns 400 (not 404) when the SKU does not exist, so we bypass
+        validate_response and check the status code directly.
+        """
+        headers = self.default_headers
+        response = requests.get(
+            f"{self.base_url}/api/Inventory/GetInventoryItem",
+            headers=headers,
+            params={"sKU": sku},
+        )
+        if response.status_code == 400:
+            return None
+        self.validate_response(response)
+        return response.json()
+
+    def _get_location_id(self, location_name: str) -> Optional[str]:
+        """Resolve a stock location name to its UUID, with per-target caching."""
+        if not hasattr(self._target, "_location_cache"):
+            self._target._location_cache = {}
+        cache = self._target._location_cache
+        if location_name not in cache:
+            for loc in self._request("GET", "/api/Inventory/GetStockLocations").json():
+                cache[loc["LocationName"]] = loc["StockLocationId"]
+        return cache.get(location_name)
 
     def validate_response(self, response: requests.Response) -> None:
         if response.status_code == 401:
@@ -63,4 +85,3 @@ class LinnworksSink(HotglueSink):
             if response.status_code == 400:
                 raise InvalidPayloadError(msg)
             raise FatalAPIError(msg)
-

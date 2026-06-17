@@ -1,9 +1,23 @@
 """Linnworks target sink classes."""
 
 import json
+import uuid
 from datetime import datetime, timedelta
+from typing import Optional
+
+from hotglue_etl_exceptions import InvalidPayloadError
 
 from target_linnworks.client import LinnworksSink
+
+
+def _parse_float(value) -> Optional[float]:
+    """Safely convert a value to float, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def _map_address(
@@ -179,3 +193,209 @@ class OrdersSink(LinnworksSink):
             return None, True, {"existing": True}
 
         return order_id, True, {}
+
+
+class ProductsSink(LinnworksSink):
+    """Writes Products to Linnworks inventory via AddInventoryItem / UpdateInventoryItem.
+
+    Each incoming Product record is upserted as one or more Linnworks stock items:
+    - No variants or a single variant: one stock item.
+    - Multiple variants: a variation parent plus one item per variant.
+
+    Stock levels (available_quantity on each Variant) are applied via SetStockLevel
+    after the item is created or updated.
+    """
+
+    name = "Products"
+
+    def preprocess_record(self, record: dict, context: dict) -> dict:
+        return record
+
+    def _build_item(
+        self,
+        sku: str,
+        name: str,
+        description: str = None,
+        purchase_price: float = None,
+        retail_price: float = None,
+        barcode: str = None,
+        weight: float = None,
+        width: float = None,
+        depth: float = None,
+        height: float = None,
+        category_name: str = None,
+        stock_level: int = None,
+    ) -> dict:
+        """Build a cleaned Linnworks stock item dict, with an optional _stock_level marker."""
+        item = self.clean_payload({
+            "ItemNumber": sku,
+            "ItemTitle": name,
+            "MetaData": description,
+            "PurchasePrice": purchase_price,
+            "RetailPrice": retail_price,
+            "BarcodeNumber": barcode,
+            "Weight": weight,
+            "Width": width,
+            "Depth": depth,
+            "Height": height,
+            "CategoryName": category_name,
+        })
+        if stock_level is not None:
+            item["_stock_level"] = int(stock_level)
+        return item
+
+    def _upsert_item(self, item: dict) -> str:
+        """Create or update a single Linnworks stock item, then set its stock level if present."""
+        stock_level = item.pop("_stock_level", None)
+        sku = item.get("ItemNumber")
+        if not sku:
+            raise InvalidPayloadError(
+                "Product record is missing a required SKU (sku or id field)."
+            )
+
+        existing = self._find_item_by_sku(sku)
+        if existing:
+            item["StockItemId"] = existing["StockItemId"]
+            self._request("POST", "/api/Inventory/UpdateInventoryItem", json={"inventoryItem": item})
+            item_id = existing["StockItemId"]
+        else:
+            item["StockItemId"] = str(uuid.uuid4())
+            self._request("POST", "/api/Inventory/AddInventoryItem", json={"inventoryItem": item})
+            item_id = item["StockItemId"]
+
+        if stock_level is not None:
+            location_name = self.config.get("location", "Default")
+            location_id = self._get_location_id(location_name)
+            if location_id is None:
+                raise InvalidPayloadError(
+                    f"Linnworks location '{location_name}' not found. "
+                    f"Check the 'location' setting in config."
+                )
+            self._request("POST", "/api/Stock/SetStockLevel", json={
+                "stockLevels": [{"SKU": sku, "LocationId": location_id, "Level": stock_level}],
+                "changeSource": "Hotglue",
+            })
+
+        return item_id
+
+    def _ensure_variation_group(
+        self, product_sku: str, name: str, variant_ids: list
+    ) -> Optional[str]:
+        """Create or update the Linnworks variation group for a multi-variant product.
+
+        Linnworks variation groups require the parent SKU to be a new identifier that
+        does not yet exist as a normal stock item. CreateVariationGroup creates that
+        parent internally. On re-runs the parent SKU already exists, so we call
+        AddVariationItems instead (which is idempotent for already-linked items).
+
+        Returns the parent's StockItemId (== pkVariationItemId).
+        """
+        if not product_sku or not variant_ids:
+            return None
+
+        existing_parent = self._find_item_by_sku(product_sku)
+        if existing_parent:
+            group = self._request(
+                "GET", "/api/Stock/GetVariationGroupByParentId",
+                params={"pkStockItemId": existing_parent["StockItemId"]},
+            ).json()
+            if not group:
+                raise InvalidPayloadError(
+                    f"SKU '{product_sku}' already exists as a plain stock item in Linnworks "
+                    f"but is now being synced as a multi-variant product. "
+                    f"Delete the existing item in Linnworks first to convert it to a variation group."
+                )
+            self._request("POST", "/api/Stock/AddVariationItems", json={
+                "pkVariationItemId": existing_parent["StockItemId"],
+                "pkStockItemIds": variant_ids,
+            })
+            return existing_parent["StockItemId"]
+
+        resp = self._request("POST", "/api/Stock/CreateVariationGroup", json={
+            "template": {
+                "VariationGroupName": name,
+                "ParentSKU": product_sku,
+                "VariationItemIds": variant_ids,
+            }
+        })
+        return resp.json().get("pkVariationItemId")
+
+    def upsert_record(self, record: dict, context: dict) -> tuple:
+        product_sku = record.get("sku") or record.get("id") or ""
+        name = record.get("name") or product_sku
+        description = record.get("description") or record.get("short_description")
+        cost = _parse_float(record.get("cost"))
+
+        category = record.get("category") or {}
+        categories = record.get("categories") or []
+        first_category = categories[0] if categories else None
+        category_name = (
+            category.get("name")
+            or (first_category.get("name") if isinstance(first_category, dict) else None)
+        )
+
+        variants = record.get("variants") or []
+
+        if not variants:
+            # No variant data — map the product itself as a single stock item.
+            item_id = self._upsert_item(self._build_item(
+                sku=product_sku,
+                name=name,
+                description=description,
+                purchase_price=cost,
+                category_name=category_name,
+            ))
+            return item_id, True, {}
+
+        if len(variants) == 1:
+            # Single variant — treat as a simple product; prefer variant-level fields.
+            v = variants[0]
+            variant_cost = _parse_float(v.get("cost"))
+            item_id = self._upsert_item(self._build_item(
+                sku=v.get("sku") or product_sku,
+                name=name,
+                description=description,
+                purchase_price=variant_cost if variant_cost is not None else cost,
+                retail_price=_parse_float(v.get("price")),
+                barcode=v.get("barcode"),
+                weight=_parse_float(v.get("weight")),
+                width=_parse_float(v.get("width")),
+                depth=_parse_float(v.get("depth")),
+                height=_parse_float(v.get("length")),
+                category_name=category_name,
+                stock_level=v.get("available_quantity"),
+            ))
+            return item_id, True, {}
+
+        # Multiple variants: upsert each variant item, then link them under a
+        # variation group. The group parent (product_sku) is owned by Linnworks and
+        # must NOT be pre-created as a normal stock item.
+        variant_ids = []
+        for v in variants:
+            v_sku = v.get("sku")
+            if not v_sku or v_sku == product_sku:
+                continue
+            variant_cost = _parse_float(v.get("cost"))
+            v_id = self._upsert_item(self._build_item(
+                sku=v_sku,
+                name=name,
+                description=v.get("description") or description,
+                purchase_price=variant_cost if variant_cost is not None else cost,
+                retail_price=_parse_float(v.get("price")),
+                barcode=v.get("barcode"),
+                weight=_parse_float(v.get("weight")),
+                width=_parse_float(v.get("width")),
+                depth=_parse_float(v.get("depth")),
+                height=_parse_float(v.get("length")),
+                category_name=category_name,
+                stock_level=v.get("available_quantity"),
+            ))
+            variant_ids.append(v_id)
+
+        if not variant_ids:
+            raise InvalidPayloadError(
+                "Multi-variant product has no variant SKUs to sync."
+            )
+
+        group_id = self._ensure_variation_group(product_sku, name, variant_ids)
+        return group_id, True, {}
