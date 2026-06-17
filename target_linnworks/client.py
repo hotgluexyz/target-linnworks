@@ -101,7 +101,7 @@ class LinnworksSink(HotglueSink):
         channel_sku: str,
         source: str,
         subsource: str,
-    ) -> None:
+    ) -> bool:
         """Create a Linnworks channel mapping linking a stock item to a channel SKU."""
         response = self._request(
             "POST",
@@ -117,7 +117,7 @@ class LinnworksSink(HotglueSink):
         )
         results = response.json().get("Results") or []
         if not results:
-            return
+            return False
         result = results[0]
         if result.get("ResultStatus") != "SUCCESSFUL":
             message = result.get("Message") or "unknown error"
@@ -128,8 +128,9 @@ class LinnworksSink(HotglueSink):
                 subsource,
                 message,
             )
-            return
+            return False
         self._get_stock_channel_skus(stock_item_id).append(result.get("Result") or {})
+        return True
 
     def _resolve_stock_item_id(self, line: dict) -> Optional[str]:
         """Prefer ETL stock_item_id; fall back to GetInventoryItem by sku/item_number."""

@@ -138,15 +138,14 @@ class OrdersSink(LinnworksSink):
                     item.get("sku"),
                     channel_sku,
                 )
-                cache.add(cache_key)
                 continue
 
             if self._is_channel_linked(source, subsource, channel_sku, stock_item_id):
                 cache.add(cache_key)
                 continue
 
-            self._create_channel_mapping(stock_item_id, channel_sku, source, subsource)
-            cache.add(cache_key)
+            if self._create_channel_mapping(stock_item_id, channel_sku, source, subsource):
+                cache.add(cache_key)
 
     def preprocess_record(self, record: dict, context: dict) -> dict:
         config = self.config
