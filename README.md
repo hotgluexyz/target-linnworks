@@ -24,6 +24,7 @@ pip install git+https://github.com/hotgluexyz/target-linnworks.git
 | `location` | No | Linnworks location name used when creating orders and setting stock levels. Defaults to `"Default"` |
 | `default_source` | No | Default value for the `Source` field on created orders. Defaults to `"Hotglue"` |
 | `default_subsource` | No | Default value for the `SubSource` field on created orders. Defaults to `"Hotglue"` |
+| `ensure_channel_mappings` | No | When `true` (default), ensure each order line has a Linnworks channel mapping for `Source` + `SubSource` + `ChannelSKU` before `CreateOrders`. Requires the stock item to exist in inventory. |
 
 Example `config.json`:
 
@@ -66,7 +67,9 @@ Linnworks uses a System Integration application model:
 | `paid` | `PaymentStatus` (1 = paid, omitted = unpaid) |
 | `shipping_method` / `postal_service_name` / `shipping_lines[0].carrier` | `PostalServiceName` |
 | `shipping_cost` / `postage_cost` / `total_shipping` | `PostageCost` |
-| `line_items[].sku` | `OrderItems[].ItemNumber` / `ChannelSKU` |
+| `line_items[].sku` | `OrderItems[].ItemNumber`; fallback stock lookup for channel mapping |
+| `line_items[].channel_sku` | `OrderItems[].ChannelSKU`; channel mapping key |
+| `line_items[].stock_item_id` | Optional; skips `GetInventoryItem` when creating channel mapping |
 | `line_items[].product_name` / `title` / `name` | `OrderItems[].ItemTitle` |
 | `line_items[].quantity` | `OrderItems[].Qty` |
 | `line_items[].unit_price` / `price` | `OrderItems[].PricePerUnit` |

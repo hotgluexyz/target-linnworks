@@ -84,6 +84,69 @@ class OrdersSink(LinnworksSink):
     endpoint = "/api/Orders/CreateOrders"
     entity = "OrderId"
 
+    def process_record(self, record: dict, context: dict) -> None:
+        """Ensure channel mappings exist before preprocessing and upserting the order."""
+        if self.config.get("ensure_channel_mappings", True):
+            self._ensure_channel_mappings_for_order(record)
+        super().process_record(record, context)
+
+    def _order_line_items(self, record: dict) -> list:
+        """Return unified line items from the order record."""
+        return (
+            record.get("line_items")
+            or record.get("order_items")
+            or record.get("items")
+            or []
+        )
+
+    def _order_channel_identity(self, record: dict) -> tuple:
+        """Return (source, subsource) for channel mapping, matching CreateOrders fields."""
+        source = record.get("source") or self.config.get("default_source", "Hotglue")
+        subsource = (
+            record.get("subsource")
+            or record.get("sub_source")
+            or self.config.get("default_subsource", "Hotglue")
+        )
+        return source.upper(), subsource
+
+    def _channel_mapping_cache(self) -> set:
+        """Return the per-run cache of (source, subsource, channel_sku) keys already handled."""
+        if not hasattr(self._target, "_channel_mapping_cache"):
+            self._target._channel_mapping_cache = set()
+        return self._target._channel_mapping_cache
+
+    def _ensure_channel_mappings_for_order(self, record: dict) -> None:
+        """Create missing channel mappings so order lines link to Linnworks inventory."""
+        source, subsource = self._order_channel_identity(record)
+        cache = self._channel_mapping_cache()
+
+        for item in self._order_line_items(record):
+            if not item:
+                continue
+            channel_sku = item.get("channel_sku") or item.get("sku")
+            if not channel_sku:
+                continue
+
+            cache_key = (source, subsource, channel_sku)
+            if cache_key in cache:
+                continue
+
+            stock_item_id = self._resolve_stock_item_id(item)
+            if not stock_item_id:
+                self.logger.warning(
+                    "No stock item for sku %r (channel_sku %r); cannot create channel mapping",
+                    item.get("sku"),
+                    channel_sku,
+                )
+                continue
+
+            if self._is_channel_linked(source, subsource, channel_sku, stock_item_id):
+                cache.add(cache_key)
+                continue
+
+            if self._create_channel_mapping(stock_item_id, channel_sku, source, subsource):
+                cache.add(cache_key)
+
     def preprocess_record(self, record: dict, context: dict) -> dict:
         config = self.config
         default_source = config.get("default_source", "Hotglue")

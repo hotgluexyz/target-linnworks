@@ -24,6 +24,7 @@ class TargetLinnworks(TargetHotglue):
         th.Property("location", th.StringType, required=False),
         th.Property("default_source", th.StringType, required=False),
         th.Property("default_subsource", th.StringType, required=False),
+        th.Property("ensure_channel_mappings", th.BooleanType, required=False),
     ).to_dict()
 
 
