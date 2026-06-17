@@ -63,6 +63,85 @@ class LinnworksSink(HotglueSink):
                 cache[loc["LocationName"]] = loc["StockLocationId"]
         return cache.get(location_name)
 
+    def _get_stock_channel_skus(self, stock_item_id: str) -> list:
+        """Return channel SKU mappings for a stock item, with per-target caching."""
+        if not hasattr(self._target, "_stock_channel_skus_cache"):
+            self._target._stock_channel_skus_cache = {}
+        cache = self._target._stock_channel_skus_cache
+        if stock_item_id not in cache:
+            response = self._request(
+                "GET",
+                "/api/Inventory/GetInventoryItemChannelSKUs",
+                params={"inventoryItemId": stock_item_id},
+            )
+            cache[stock_item_id] = response.json()
+        return cache[stock_item_id]
+
+    def _is_channel_linked(
+        self,
+        source: str,
+        subsource: str,
+        channel_sku: str,
+        stock_item_id: str,
+    ) -> bool:
+        """Return True when the stock item has a channel mapping for source/subsource/sku."""
+        source_upper = source.upper()
+        for mapping in self._get_stock_channel_skus(stock_item_id):
+            if (
+                mapping.get("SKU") == channel_sku
+                and (mapping.get("Source") or "").upper() == source_upper
+                and mapping.get("SubSource") == subsource
+            ):
+                return True
+        return False
+
+    def _create_channel_mapping(
+        self,
+        stock_item_id: str,
+        channel_sku: str,
+        source: str,
+        subsource: str,
+    ) -> None:
+        """Create a Linnworks channel mapping linking a stock item to a channel SKU."""
+        response = self._request(
+            "POST",
+            "/api/Inventory/CreateChannelMapping",
+            json={
+                "Mappings": [{
+                    "StockItemId": stock_item_id,
+                    "ChannelSKU": channel_sku,
+                    "Source": source.upper(),
+                    "SubSource": subsource,
+                }],
+            },
+        )
+        results = response.json().get("Results") or []
+        if not results:
+            return
+        result = results[0]
+        if result.get("ResultStatus") != "SUCCESSFUL":
+            message = result.get("Message") or "unknown error"
+            self.logger.warning(
+                "CreateChannelMapping failed for channel_sku %r (%s/%s): %s",
+                channel_sku,
+                source,
+                subsource,
+                message,
+            )
+            return
+        self._get_stock_channel_skus(stock_item_id).append(result.get("Result") or {})
+
+    def _resolve_stock_item_id(self, line: dict) -> Optional[str]:
+        """Prefer ETL stock_item_id; fall back to GetInventoryItem by sku/item_number."""
+        stock_item_id = (line.get("stock_item_id") or "").strip()
+        if stock_item_id:
+            return stock_item_id
+        sku = line.get("sku") or line.get("item_number")
+        if not sku:
+            return None
+        stock = self._find_item_by_sku(sku)
+        return stock.get("StockItemId") if stock else None
+
     def validate_response(self, response: requests.Response) -> None:
         if response.status_code == 401:
             try:
