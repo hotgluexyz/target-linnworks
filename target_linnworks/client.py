@@ -134,9 +134,11 @@ class LinnworksSink(HotglueSink):
 
     def _resolve_stock_item_id(self, line: dict) -> Optional[str]:
         """Prefer ETL stock_item_id; fall back to GetInventoryItem by sku/item_number."""
-        stock_item_id = (line.get("stock_item_id") or "").strip()
-        if stock_item_id:
-            return stock_item_id
+        raw_id = line.get("stock_item_id")
+        if raw_id is not None:
+            stock_item_id = str(raw_id).strip()
+            if stock_item_id:
+                return stock_item_id
         sku = line.get("sku") or line.get("item_number")
         if not sku:
             return None
