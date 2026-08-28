@@ -60,10 +60,24 @@ def _map_address(
     }
 
 
+def _map_line_item_options(item: dict) -> list:
+    """Map unified OrderLineItem.options to Linnworks ChannelOrderItemOption objects."""
+    mapped = []
+    for option in item.get("options") or []:
+        if not option:
+            continue
+        property_name = option.get("id")
+        value = option.get("value")
+        if property_name is None or value is None:
+            continue
+        mapped.append({"Property": str(property_name), "Value": str(value)})
+    return mapped
+
+
 def _map_line_item(item: dict) -> dict:
     """Map a hotglue unified line item to a Linnworks OrderItem object."""
     sku = item.get("sku") or item.get("item_number") or item.get("channel_sku") or ""
-    return {
+    mapped = {
         "TaxCostInclusive": item.get("tax_cost_inclusive", True),
         "UseChannelTax": item.get("use_channel_tax", False),
         "PricePerUnit": float(next((item[k] for k in ("unit_price", "price", "price_per_unit") if item.get(k) is not None), 0)),
@@ -75,6 +89,10 @@ def _map_line_item(item: dict) -> dict:
         "IsService": bool(item.get("is_service", False)),
         "ItemTitle": item.get("product_name") or item.get("title") or item.get("name") or item.get("item_title") or sku,
     }
+    options = _map_line_item_options(item)
+    if options:
+        mapped["Options"] = options
+    return mapped
 
 
 class OrdersSink(LinnworksSink):

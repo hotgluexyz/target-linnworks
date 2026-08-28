@@ -75,6 +75,8 @@ Linnworks uses a System Integration application model:
 | `line_items[].unit_price` / `price` | `OrderItems[].PricePerUnit` |
 | `line_items[].discount_amount` / `discount` | `OrderItems[].LineDiscount` |
 | `line_items[].tax_rate` | `OrderItems[].TaxRate` |
+| `line_items[].options[].id` | `OrderItems[].Options[].Property` |
+| `line_items[].options[].value` | `OrderItems[].Options[].Value` |
 | `billing_address.*` / `billing_name` / `billing_email` | `BillingAddress.*` |
 | `shipping_address.*` / `shipping_name` / `customer_email` | `DeliveryAddress.*` |
 
